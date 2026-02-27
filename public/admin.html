@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin — Virtual Tour</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css">
+</head>
+<body class="admin-body">
+
+<!-- Top bar -->
+<div class="admin-topbar">
+  <span class="logo">⚙ Virtual Tour Admin</span>
+  <span class="spacer"></span>
+  <a href="/tour.html" class="btn btn-ghost btn-sm" style="text-decoration:none">🌐 View Tour</a>
+  <div class="user-chip" id="userChip">
+    <div class="av" id="userAv">A</div>
+    <span id="userName">Admin</span>
+  </div>
+  <button class="btn btn-ghost btn-sm" id="btnLogout">Sign Out</button>
+</div>
+
+<div class="admin-shell">
+
+  <!-- ── SIDEBAR ── -->
+  <aside class="admin-sidebar">
+
+    <!-- Upload -->
+    <div class="card">
+      <div class="card-hdr"><h3>📤 Upload Images</h3></div>
+      <input id="fileInput" type="file" multiple accept="image/*" style="margin-bottom:10px">
+      <div class="row">
+        <button class="btn btn-primary" id="btnUpload" style="flex:1">Upload</button>
+        <button class="btn btn-ghost"   id="btnAutoCreate" style="flex:1">+ Create Scenes</button>
+      </div>
+      <div id="uploadMsg" class="small" style="margin-top:8px;min-height:16px"></div>
+    </div>
+
+    <!-- Scenes list -->
+    <div class="card" style="flex:1">
+      <div class="card-hdr">
+        <h3>🖼 Scenes</h3>
+        <button class="btn btn-ghost btn-sm" id="btnNewScene">+ New</button>
+      </div>
+      <div id="sceneList"></div>
+    </div>
+
+    <!-- Stats + Users -->
+    <div class="card">
+      <div class="card-hdr">
+        <h3>👥 Users &amp; Stats</h3>
+        <button class="btn btn-ghost btn-sm" id="btnReloadStats">↺</button>
+      </div>
+      <div class="stat-grid" id="statGrid">
+        <div class="stat-box shimmer" style="height:64px"></div>
+        <div class="stat-box shimmer" style="height:64px"></div>
+        <div class="stat-box shimmer" style="height:64px"></div>
+      </div>
+      <div class="divider"></div>
+      <div id="userList"></div>
+    </div>
+
+  </aside>
+
+  <!-- ── MAIN ── -->
+  <main class="admin-main">
+
+    <!-- Scene editor -->
+    <div class="card">
+      <div class="card-hdr"><h3>✏ Scene Editor</h3></div>
+      <div class="row" style="flex-wrap:wrap;gap:8px">
+        <input id="sceneId"    type="text"  readonly placeholder="auto id"          style="flex:0 0 160px;max-width:200px;color:var(--text3)">
+        <input id="sceneTitle" type="text"  placeholder="Scene title"               style="flex:1;min-width:140px">
+        <input id="sceneImage" type="text"  placeholder="/uploads/panorama.jpg"     style="flex:2;min-width:200px">
+        <button class="btn btn-primary" id="btnSaveScene">Save</button>
+        <button class="btn btn-danger btn-sm" id="btnDeleteScene">Delete</button>
+      </div>
+    </div>
+
+    <!-- Preview -->
+    <div class="card">
+      <div class="card-hdr">
+        <h3>👁 Preview</h3>
+        <button class="btn btn-ghost btn-sm" id="btnFullscreen">⛶ Fullscreen</button>
+      </div>
+      <div id="adminViewer">
+        <div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text3);font-size:14px;flex-direction:column;gap:12px">
+          <div style="font-size:36px;opacity:.3">🖼</div>
+          <span>Select a scene to preview</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hotspots -->
+    <div class="card">
+      <div class="card-hdr"><h3>📍 Hotspots</h3></div>
+      <div id="hotspotList"></div>
+      <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
+        <div class="row" style="margin-bottom:8px;gap:8px">
+          <label style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text2);min-width:60px">Type</label>
+          <select id="hsType" style="flex:1">
+            <option value="scene">🔗 Navigation (go to scene)</option>
+            <option value="info">ℹ️ Info (show text popup)</option>
+          </select>
+        </div>
+        <div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:8px">
+          <input id="hsPitch"  type="number" step="0.0001" placeholder="Pitch"  style="width:110px;flex:0 0 110px">
+          <input id="hsYaw"    type="number" step="0.0001" placeholder="Yaw"    style="width:110px;flex:0 0 110px">
+          <input id="hsLabel"  type="text"   placeholder="Label / title"        style="flex:1;min-width:120px">
+        </div>
+        <div id="hsNavRow" class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:8px">
+          <select id="hsTarget" style="flex:1;min-width:160px"></select>
+        </div>
+        <div id="hsInfoRow" style="display:none;margin-bottom:8px">
+          <textarea id="hsInfoText" placeholder="Info text / description (shown in popup)…" rows="3" style="width:100%;resize:vertical;padding:9px 12px;border-radius:8px;border:1.5px solid var(--border);font-family:inherit;font-size:13px;color:var(--text);background:var(--surface2)"></textarea>
+        </div>
+        <button class="btn btn-primary" id="btnAddHotspot" style="width:100%">Add Hotspot</button>
+      </div>
+      <p class="small" style="margin-top:8px">💡 Click inside the preview to auto-capture pitch &amp; yaw.</p>
+    </div>
+
+    <!-- Dashboard chart -->
+    <div class="card">
+      <div class="card-hdr"><h3>📊 Visit Analytics</h3></div>
+      <canvas id="statsChart" style="width:100%;height:220px"></canvas>
+    </div>
+
+  </main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
+<script src="/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Forgot Password — Virtual Tour</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="auth-page">
+<div class="auth-card">
+  <div class="auth-logo">
+    <div style="font-size:52px;animation:float 6s ease-in-out infinite">🔑</div>
+    <h2>Forgot Password?</h2>
+    <p>Enter your email and we'll send a reset link</p>
+  </div>
+
+  <div id="formView">
+    <div class="auth-field">
+      <label>Email address</label>
+      <input id="email" type="email" placeholder="you@example.com" autocomplete="email">
+    </div>
+    <button class="auth-btn" id="btnForgot" onclick="sendReset()">Send Reset Link</button>
+    <div id="msg" class="auth-msg"></div>
+    <div class="auth-links">
+      <a href="/login.html">← Back to sign in</a>
+    </div>
+  </div>
+
+  <div id="successView" style="display:none;text-align:center;animation:fadeUp .5s ease both">
+    <div style="font-size:52px;margin-bottom:16px;animation:float 5s ease-in-out infinite">📧</div>
+    <h3 style="font-family:'Space Grotesk',sans-serif;font-size:20px;margin-bottom:8px">Check your inbox</h3>
+    <p style="color:var(--text2);font-size:14px;line-height:1.6;margin-bottom:20px">
+      If an account exists for that email, you'll receive a password reset link shortly.<br>
+      Check your spam folder if you don't see it.
+    </p>
+    <a href="/login.html" class="btn btn-primary" style="text-decoration:none">Back to Sign In</a>
+  </div>
+</div>
+
+<script>
+document.addEventListener('keydown', e => { if (e.key === 'Enter') sendReset(); });
+
+async function sendReset() {
+  const btn   = document.getElementById('btnForgot');
+  const email = document.getElementById('email').value.trim();
+  if (!email) { showMsg('Please enter your email address.', 'error'); return; }
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Sending…';
+
+  try {
+    await fetch('/api/forgot', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    // Always show success (don't reveal if email exists)
+    document.getElementById('formView').style.display = 'none';
+    document.getElementById('successView').style.display = 'block';
+  } catch (e) {
+    showMsg('Connection error. Try again.', 'error');
+    btn.disabled = false;
+    btn.textContent = 'Send Reset Link';
+  }
+}
+
+function showMsg(text, type) {
+  const el = document.getElementById('msg');
+  el.textContent = text;
+  el.className = 'auth-msg ' + type;
+}
+</script>
+</body>
+</html>

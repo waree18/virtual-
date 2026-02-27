@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Register — Virtual Tour</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="auth-page">
+<div class="auth-card">
+  <div class="auth-logo">
+    <img src="/logo.png" alt="Logo" onerror="this.style.display='none'">
+    <h2>Create Account</h2>
+    <p>Join Virtual Tour today</p>
+  </div>
+
+  <div class="auth-field">
+    <label>Full name</label>
+    <input id="username" type="text" placeholder="Your name" autocomplete="name">
+  </div>
+  <div class="auth-field">
+    <label>Email address</label>
+    <input id="email" type="email" placeholder="you@example.com" autocomplete="email">
+  </div>
+  <div class="auth-field">
+    <label>Password <span style="color:var(--text3);font-weight:400">(min. 8 characters)</span></label>
+    <input id="password" type="password" placeholder="••••••••" autocomplete="new-password">
+  </div>
+
+  <button class="auth-btn" id="btnReg" onclick="register()">Create Account</button>
+  <div id="msg" class="auth-msg"></div>
+
+  <div class="auth-links">
+    <a href="/login.html">← Back to sign in</a>
+  </div>
+</div>
+
+<script>
+document.addEventListener('keydown', e => { if (e.key === 'Enter') register(); });
+
+async function register() {
+  const btn      = document.getElementById('btnReg');
+  const email    = document.getElementById('email').value.trim();
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+
+  if (!email || !username || !password) { showMsg('Please fill in all fields.', 'error'); return; }
+  if (password.length < 8) { showMsg('Password must be at least 8 characters.', 'error'); return; }
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Creating account…';
+
+  try {
+    const res  = await fetch('/api/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, username, password })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      showMsg('Account created! Redirecting to login…', 'success');
+      setTimeout(() => location.href = '/login.html', 1500);
+    } else {
+      const msgs = {
+        email_exists: 'An account with this email already exists.',
+        password_too_short: 'Password must be at least 8 characters.',
+        missing_fields: 'Please fill in all fields.',
+      };
+      showMsg(msgs[data.error] || 'Registration failed.', 'error');
+      btn.disabled = false;
+      btn.textContent = 'Create Account';
+    }
+  } catch (e) {
+    showMsg('Connection error. Try again.', 'error');
+    btn.disabled = false;
+    btn.textContent = 'Create Account';
+  }
+}
+
+function showMsg(text, type) {
+  const el = document.getElementById('msg');
+  el.textContent = text;
+  el.className = 'auth-msg ' + type;
+}
+</script>
+</body>
+</html>

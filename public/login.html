@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Login — Virtual Tour</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="auth-page">
+<div class="auth-card">
+  <div class="auth-logo">
+    <img src="/logo.png" alt="Logo" onerror="this.style.display='none'">
+    <h2>Virtual Tour</h2>
+    <p>Sign in to your account</p>
+  </div>
+
+  <div class="auth-field">
+    <label>Email address</label>
+    <input id="email" type="email" placeholder="you@example.com" autocomplete="email">
+  </div>
+  <div class="auth-field">
+    <label>Password</label>
+    <input id="password" type="password" placeholder="••••••••" autocomplete="current-password">
+  </div>
+
+  <button class="auth-btn" id="btnLogin" onclick="login()">Sign In</button>
+  <div id="msg" class="auth-msg"></div>
+
+  <div class="auth-links">
+    <a href="/register.html">Create account</a>
+    <a href="/forgot.html">Forgot password?</a>
+  </div>
+</div>
+
+<script>
+// Enter key
+document.addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+
+async function login() {
+  const btn  = document.getElementById('btnLogin');
+  const msg  = document.getElementById('msg');
+  const email    = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+
+  if (!email || !password) { showMsg('Please fill in all fields', 'error'); return; }
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Signing in…';
+  msg.className = 'auth-msg'; msg.textContent = '';
+
+  try {
+    const res  = await fetch('/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      showMsg('Welcome back, ' + (data.username || 'User') + '!', 'success');
+      setTimeout(() => {
+        location.href = data.role === 'admin' || data.role === 'editor' ? '/admin.html' : '/tour.html';
+      }, 600);
+    } else {
+      const msgs = {
+        invalid_credentials: 'Invalid email or password.',
+        missing_fields: 'Please fill in all fields.',
+      };
+      showMsg(msgs[data.error] || 'Login failed. Please try again.', 'error');
+      document.getElementById('password').value = '';
+      btn.disabled = false;
+      btn.textContent = 'Sign In';
+    }
+  } catch (e) {
+    showMsg('Connection error. Please try again.', 'error');
+    btn.disabled = false;
+    btn.textContent = 'Sign In';
+  }
+}
+
+function showMsg(text, type) {
+  const el = document.getElementById('msg');
+  el.textContent = text;
+  el.className = 'auth-msg ' + type;
+}
+</script>
+</body>
+</html>

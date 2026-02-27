@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reset Password — Virtual Tour</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="auth-page">
+<div class="auth-card">
+  <div class="auth-logo">
+    <div id="icon" style="font-size:52px;animation:float 6s ease-in-out infinite">🔒</div>
+    <h2 id="cardTitle">Reset Password</h2>
+    <p id="cardSub">Create a strong new password</p>
+  </div>
+
+  <div id="loading" style="text-align:center;padding:20px;color:var(--text3)">
+    <div style="width:28px;height:28px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;margin:0 auto 12px"></div>
+    Verifying link…
+  </div>
+
+  <div id="formView" style="display:none">
+    <div class="auth-field">
+      <label>New password <span style="color:var(--text3);font-weight:400">(min. 8 characters)</span></label>
+      <input id="password" type="password" placeholder="••••••••" autocomplete="new-password">
+    </div>
+    <div class="auth-field">
+      <label>Confirm password</label>
+      <input id="confirm" type="password" placeholder="••••••••" autocomplete="new-password">
+    </div>
+    <button class="auth-btn" id="btnReset" onclick="resetPassword()">Set New Password</button>
+    <div id="msg" class="auth-msg"></div>
+  </div>
+
+  <div id="expiredView" style="display:none;text-align:center;padding:10px 0">
+    <p style="color:var(--danger);margin-bottom:16px;font-size:14px">This reset link has expired or already been used.</p>
+    <a href="/forgot.html" class="btn btn-primary" style="text-decoration:none">Request New Link</a>
+  </div>
+
+  <div id="successView" style="display:none;text-align:center;animation:fadeUp .5s ease both">
+    <div style="font-size:48px;margin-bottom:12px;animation:float 5s ease-in-out infinite">✅</div>
+    <p style="color:var(--success);font-weight:600;margin-bottom:16px">Password updated successfully!</p>
+    <a href="/login.html" class="btn btn-primary" style="text-decoration:none">Sign In Now</a>
+  </div>
+</div>
+
+<script>
+const token = new URLSearchParams(location.search).get('token');
+
+async function init() {
+  if (!token) { showExpired(); return; }
+  try {
+    const res  = await fetch('/api/reset/verify?token=' + encodeURIComponent(token));
+    const data = await res.json();
+    document.getElementById('loading').style.display = 'none';
+    if (data.valid) {
+      document.getElementById('formView').style.display = 'block';
+    } else {
+      showExpired();
+    }
+  } catch(e) {
+    document.getElementById('loading').style.display = 'none';
+    showExpired();
+  }
+}
+
+function showExpired() {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('icon').textContent = '⏰';
+  document.getElementById('cardTitle').textContent = 'Link Expired';
+  document.getElementById('cardSub').textContent = 'This link is no longer valid';
+  document.getElementById('expiredView').style.display = 'block';
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Enter') resetPassword(); });
+
+async function resetPassword() {
+  const btn      = document.getElementById('btnReset');
+  const password = document.getElementById('password').value;
+  const confirm  = document.getElementById('confirm').value;
+
+  if (password.length < 8) { showMsg('Password must be at least 8 characters.', 'error'); return; }
+  if (password !== confirm) { showMsg('Passwords do not match.', 'error'); return; }
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Updating…';
+
+  try {
+    const res  = await fetch('/api/reset', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, password })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      document.getElementById('formView').style.display = 'none';
+      document.getElementById('successView').style.display = 'block';
+    } else {
+      const msgs = {
+        token_expired: 'This link has expired.',
+        invalid_input: 'Invalid input. Check your password.',
+      };
+      showMsg(msgs[data.error] || 'Reset failed. Try again.', 'error');
+      btn.disabled = false;
+      btn.textContent = 'Set New Password';
+    }
+  } catch(e) {
+    showMsg('Connection error.', 'error');
+    btn.disabled = false;
+    btn.textContent = 'Set New Password';
+  }
+}
+
+function showMsg(text, type) {
+  const el = document.getElementById('msg');
+  el.textContent = text;
+  el.className = 'auth-msg ' + type;
+}
+
+init();
+</script>
+</body>
+</html>

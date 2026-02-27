@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Signed Out — Virtual Tour</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="auth-page">
+<div class="auth-card logout-card">
+  <span class="logout-icon">👋</span>
+  <h2>You've signed out</h2>
+  <p>Thank you for using Virtual Tour.<br>See you next time!</p>
+  <div class="logout-actions">
+    <a href="/login.html" class="btn btn-primary" style="text-decoration:none">Sign In Again</a>
+    <a href="/tour.html"  class="btn btn-ghost"   style="text-decoration:none">View Tour</a>
+  </div>
+</div>
+<script>
+// Auto-call logout API if landed here directly
+fetch('/api/logout', { method: 'POST' }).catch(() => {});
+</script>
+</body>
+</html>
