@@ -177,7 +177,7 @@ async function optimisePanorama(filePath) {
    APP
 ──────────────────────────────────────────────── */
 const app = express();
-
+app.set('trust proxy', 1);
 if (helmet) {
   app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 }
