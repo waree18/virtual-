@@ -8,21 +8,19 @@
       return;
     }
 
+    // ── Main viewer ──
     const viewer = pannellum.viewer('viewer', {
-      default: {
-        firstScene: ids[0],
-        sceneFadeDuration: 400,
-        autoLoad: true
-      },
-      scenes: scenes,
-      orientationOnByDefault: true
+      default: { firstScene: ids[0], sceneFadeDuration: 400, autoLoad: true },
+      scenes,
+      orientationOnByDefault: false
     });
 
-    // ── VR state ──
     let vrMode = false;
-    let vrRAF  = null;      // requestAnimationFrame handle
-    let vrCanvas = null;    // overlay <canvas>
-    let vrCtx    = null;    // 2d context of overlay
+    let vrLeft = null;      // pannellum instance – left eye
+    let vrRight = null;     // pannellum instance – right eye
+    let vrSyncTimer = null;
+    let vrContainer = null;
+    let gyroHandler = null;
 
     function updateTitle(sceneId) {
       document.getElementById('titleBar').innerText = scenes[sceneId]?.title || sceneId;
@@ -32,162 +30,168 @@
         body: JSON.stringify({ sceneId })
       });
     }
-
-    viewer.on('scenechange', (sceneId) => updateTitle(sceneId));
+    viewer.on('scenechange', updateTitle);
     updateTitle(ids[0]);
 
-    // ── Navigation ──
+    // ── Nav buttons ──
     document.getElementById('prevBtn').onclick = () => {
-      const cur = viewer.getScene();
-      const i = ids.indexOf(cur);
+      const i = ids.indexOf(viewer.getScene());
       viewer.loadScene(ids[(i - 1 + ids.length) % ids.length]);
     };
     document.getElementById('nextBtn').onclick = () => {
-      const cur = viewer.getScene();
-      const i = ids.indexOf(cur);
+      const i = ids.indexOf(viewer.getScene());
       viewer.loadScene(ids[(i + 1) % ids.length]);
     };
-
-    // ── Fullscreen ──
     const fsBtn = document.getElementById('fsBtn');
-    if (fsBtn) {
-      fsBtn.onclick = () => {
-        viewer.isFullscreen() ? viewer.exitFullscreen() : viewer.toggleFullscreen();
+    if (fsBtn) fsBtn.onclick = () =>
+      viewer.isFullscreen() ? viewer.exitFullscreen() : viewer.toggleFullscreen();
+
+    // ════════════════════════════════════════════════
+    //  VR STEREO  –  Two real Pannellum instances
+    //
+    //  WHY: Pannellum uses WebGL with preserveDrawingBuffer=false.
+    //  drawImage() on a WebGL canvas always produces a blank frame
+    //  because the buffer is cleared immediately after each draw.
+    //  The ONLY working approach is two separate Pannellum viewers
+    //  side by side, both driven by the gyroscope.
+    // ════════════════════════════════════════════════
+
+    const IPD_YAW = 1.8; // degrees of yaw separation for stereo depth
+
+    function getCurrentSceneConfig() {
+      const sceneId = viewer.getScene() || ids[0];
+      const s = scenes[sceneId] || scenes[ids[0]];
+      return {
+        type: 'equirectangular',
+        panorama: s.panorama,
+        autoLoad: true,
+        showControls: false,
+        compass: false,
+        pitch: (() => { try { return viewer.getPitch(); } catch(_){ return 0; } })(),
+        yaw:   (() => { try { return viewer.getYaw();   } catch(_){ return 0; } })(),
+        hfov:  (() => { try { return viewer.getHfov();  } catch(_){ return 100; } })()
       };
-    }
-
-    // ══════════════════════════════════════════════
-    //  REAL VR STEREO  –  works in Chrome on Android
-    //  Strategy: grab Pannellum's internal WebGL
-    //  canvas via querySelector, then each frame
-    //  blit it into the LEFT half, and blit again
-    //  (with a tiny yaw offset) into the RIGHT half.
-    //  This gives true side-by-side stereo without
-    //  any extra library.
-    // ══════════════════════════════════════════════
-
-    function getPannellumCanvas() {
-      // Pannellum renders into a <canvas> inside #viewer
-      return document.querySelector('#viewer canvas');
-    }
-
-    function createVrOverlay() {
-      const c = document.createElement('canvas');
-      c.id = 'vrOverlay';
-      c.style.cssText = [
-        'position:fixed', 'top:0', 'left:0',
-        'width:100vw', 'height:100vh',
-        'z-index:9999', 'display:block',
-        'background:#000', 'touch-action:none'
-      ].join(';');
-      c.width  = screen.width  || window.innerWidth;
-      c.height = screen.height || window.innerHeight;
-      document.body.appendChild(c);
-      return c;
-    }
-
-    // IPD offset in degrees – how much each eye is rotated
-    const EYE_YAW_OFFSET = 1.8;
-
-    function vrRenderLoop() {
-      if (!vrMode || !vrCanvas || !vrCtx) return;
-
-      const src = getPannellumCanvas();
-      if (!src || src.width === 0) {
-        vrRAF = requestAnimationFrame(vrRenderLoop);
-        return;
-      }
-
-      const W = vrCanvas.width;
-      const H = vrCanvas.height;
-      const halfW = W / 2;
-
-      vrCtx.clearRect(0, 0, W, H);
-
-      // ── LEFT EYE ──
-      // Shift pannellum yaw slightly left, grab frame, draw to left half
-      try { viewer.setYaw(viewer.getYaw() - EYE_YAW_OFFSET); } catch(_){}
-      vrCtx.drawImage(src, 0, 0, halfW, H);
-
-      // ── RIGHT EYE ──
-      // Shift pannellum yaw slightly right, grab frame, draw to right half
-      try { viewer.setYaw(viewer.getYaw() + EYE_YAW_OFFSET * 2); } catch(_){}
-      vrCtx.drawImage(src, halfW, 0, halfW, H);
-
-      // Restore yaw to center between the two eye positions
-      try { viewer.setYaw(viewer.getYaw() - EYE_YAW_OFFSET); } catch(_){}
-
-      // ── Divider line ──
-      vrCtx.strokeStyle = 'rgba(255,255,255,0.25)';
-      vrCtx.lineWidth   = 2;
-      vrCtx.beginPath();
-      vrCtx.moveTo(halfW, 0);
-      vrCtx.lineTo(halfW, H);
-      vrCtx.stroke();
-
-      vrRAF = requestAnimationFrame(vrRenderLoop);
-    }
-
-    // Device-orientation → Pannellum yaw/pitch
-    function handleDeviceOrientation(e) {
-      if (!vrMode) return;
-      if (e.beta === null) return;
-
-      // Portrait-held-upright orientation mapping for Cardboard
-      const yaw   =  e.alpha;          // compass heading  → yaw
-      const pitch = (e.beta  - 90);    // tilted up = looking up
-
-      try {
-        viewer.setYaw(yaw);
-        viewer.setPitch(Math.max(-85, Math.min(85, pitch)));
-      } catch(_){}
     }
 
     async function enableVRMode() {
       if (vrMode) return;
 
-      // 1. Request gyro permission on iOS 13+
+      // 1. iOS 13+ gyro permission (must be triggered by user gesture)
       if (typeof DeviceOrientationEvent !== 'undefined' &&
           typeof DeviceOrientationEvent.requestPermission === 'function') {
         try {
-          const perm = await DeviceOrientationEvent.requestPermission();
-          if (perm !== 'granted') {
+          const p = await DeviceOrientationEvent.requestPermission();
+          if (p !== 'granted') {
             alert('Motion sensor permission is required for VR mode.');
             return;
           }
-        } catch (err) {
-          console.warn('Orientation permission error:', err);
-        }
+        } catch(e) { console.warn('Orientation permission:', e); }
       }
 
       vrMode = true;
 
-      // 2. Hide UI chrome
+      // 2. Hide main UI
       ['titleBar','prevBtn','nextBtn','vrBtn'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.style.display = 'none';
       });
+      document.getElementById('viewer').style.visibility = 'hidden';
 
-      // 3. Go fullscreen + lock landscape
+      // 3. Build split-screen VR container
+      vrContainer = document.createElement('div');
+      vrContainer.id = 'vrContainer';
+      Object.assign(vrContainer.style, {
+        position: 'fixed', inset: '0', zIndex: '9000',
+        display: 'flex', background: '#000', overflow: 'hidden'
+      });
+
+      const leftDiv  = document.createElement('div');
+      const rightDiv = document.createElement('div');
+      [leftDiv, rightDiv].forEach(d => {
+        Object.assign(d.style, {
+          width: '50%', height: '100%',
+          position: 'relative', overflow: 'hidden', flexShrink: '0'
+        });
+      });
+
+      // Nose bridge divider
+      const divider = document.createElement('div');
+      Object.assign(divider.style, {
+        position: 'absolute', left: '50%', top: '0', bottom: '0',
+        width: '4px', background: '#000',
+        transform: 'translateX(-50%)', zIndex: '9002', pointerEvents: 'none'
+      });
+
+      // Tap-to-exit button
+      const exitBtn = document.createElement('button');
+      exitBtn.textContent = '✕ Exit VR';
+      Object.assign(exitBtn.style, {
+        position: 'absolute', bottom: '18px', left: '50%',
+        transform: 'translateX(-50%)', zIndex: '9003',
+        padding: '10px 24px', background: 'rgba(0,0,0,0.65)',
+        color: '#fff', border: '1.5px solid rgba(255,255,255,0.35)',
+        borderRadius: '30px', fontSize: '14px', fontWeight: '700',
+        cursor: 'pointer', fontFamily: 'inherit'
+      });
+      exitBtn.addEventListener('click', disableVRMode);
+
+      vrContainer.appendChild(leftDiv);
+      vrContainer.appendChild(rightDiv);
+      vrContainer.appendChild(divider);
+      vrContainer.appendChild(exitBtn);
+      document.body.appendChild(vrContainer);
+
+      // 4. Init two Pannellum instances with IPD yaw offset
+      const cfg = getCurrentSceneConfig();
+
+      vrLeft = pannellum.viewer(leftDiv, {
+        ...cfg,
+        yaw: cfg.yaw - IPD_YAW,
+        orientationOnByDefault: false
+      });
+
+      vrRight = pannellum.viewer(rightDiv, {
+        ...cfg,
+        yaw: cfg.yaw + IPD_YAW,
+        orientationOnByDefault: false
+      });
+
+      // 5. Gyroscope handler
+      let targetYaw   = cfg.yaw;
+      let targetPitch = cfg.pitch;
+
+      gyroHandler = (e) => {
+        if (!vrMode || e.alpha === null) return;
+        const angle = screen.orientation?.angle ?? window.orientation ?? 0;
+
+        if (Math.abs(angle) === 90) {
+          // Landscape – standard Cardboard orientation
+          targetYaw   =  (e.alpha || 0);
+          targetPitch = -(e.gamma || 0);
+        } else {
+          // Portrait fallback
+          targetYaw   =  (e.alpha || 0);
+          targetPitch =  (e.beta  || 0) - 90;
+        }
+        targetPitch = Math.max(-85, Math.min(85, targetPitch));
+      };
+
+      window.addEventListener('deviceorientation', gyroHandler, true);
+
+      // 6. Sync both viewers to gyro at ~60fps
+      vrSyncTimer = setInterval(() => {
+        if (!vrMode) return;
+        try { vrLeft.setPitch(targetPitch);  vrLeft.setYaw(targetYaw - IPD_YAW);  } catch(_){}
+        try { vrRight.setPitch(targetPitch); vrRight.setYaw(targetYaw + IPD_YAW); } catch(_){}
+      }, 16);
+
+      // 7. Fullscreen + landscape lock
       try {
-        const el = document.documentElement;
-        if (el.requestFullscreen)            await el.requestFullscreen();
-        else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+        const root = document.documentElement;
+        if (root.requestFullscreen)            await root.requestFullscreen();
+        else if (root.webkitRequestFullscreen) root.webkitRequestFullscreen();
       } catch(_){}
       try { await screen.orientation.lock('landscape'); } catch(_){}
-
-      // 4. Create overlay canvas
-      vrCanvas = createVrOverlay();
-      vrCtx    = vrCanvas.getContext('2d');
-
-      // 5. Turn on gyro
-      window.addEventListener('deviceorientation', handleDeviceOrientation, true);
-
-      // 6. Start render loop
-      vrRenderLoop();
-
-      // 7. Tap anywhere on overlay → exit VR
-      vrCanvas.addEventListener('click', disableVRMode, { once: true });
 
       console.log('✅ VR Mode enabled');
     }
@@ -196,23 +200,20 @@
       if (!vrMode) return;
       vrMode = false;
 
-      // Stop render loop
-      if (vrRAF) { cancelAnimationFrame(vrRAF); vrRAF = null; }
+      if (vrSyncTimer) { clearInterval(vrSyncTimer); vrSyncTimer = null; }
+      if (gyroHandler) { window.removeEventListener('deviceorientation', gyroHandler, true); gyroHandler = null; }
 
-      // Remove overlay
-      if (vrCanvas && vrCanvas.parentNode) vrCanvas.parentNode.removeChild(vrCanvas);
-      vrCanvas = null; vrCtx = null;
+      try { if (vrLeft)  vrLeft.destroy();  vrLeft  = null; } catch(_){}
+      try { if (vrRight) vrRight.destroy(); vrRight = null; } catch(_){}
 
-      // Remove gyro
-      window.removeEventListener('deviceorientation', handleDeviceOrientation, true);
+      if (vrContainer) { vrContainer.remove(); vrContainer = null; }
 
-      // Restore UI
+      document.getElementById('viewer').style.visibility = '';
       ['titleBar','prevBtn','nextBtn','vrBtn'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.style.display = '';
       });
 
-      // Exit fullscreen
       try {
         if (document.exitFullscreen)            document.exitFullscreen();
         else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
@@ -224,16 +225,21 @@
 
     // ── VR Button ──
     const vrBtn = document.getElementById('vrBtn');
-    if (vrBtn) {
-      vrBtn.onclick = () => vrMode ? disableVRMode() : enableVRMode();
-    }
+    if (vrBtn) vrBtn.onclick = () => vrMode ? disableVRMode() : enableVRMode();
 
-    // ── Keep overlay canvas sized to screen ──
+    // ── Scene change: update both VR viewers ──
+    viewer.on('scenechange', (sceneId) => {
+      if (!vrMode) return;
+      const s = scenes[sceneId];
+      if (!s) return;
+      try { vrLeft.loadPanorama(s.panorama);  } catch(_){}
+      try { vrRight.loadPanorama(s.panorama); } catch(_){}
+    });
+
     window.addEventListener('resize', () => {
-      if (vrCanvas) {
-        vrCanvas.width  = window.innerWidth;
-        vrCanvas.height = window.innerHeight;
-      }
+      if (!vrMode) return;
+      try { vrLeft?.resize();  } catch(_){}
+      try { vrRight?.resize(); } catch(_){}
     });
 
   } catch (e) {
