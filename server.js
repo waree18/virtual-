@@ -197,67 +197,95 @@ app.use(session({
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: false, httpOnly: true }
+  cookie: { maxAge: 86400000, httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production' }
 }));
 
-// Serve static files
-app.use(express.static('public'));
-
-// Auth middleware
-const requireAuth = (role) => (req, res, next) => {
-  if (!req.session.user) return res.status(401).json({ error: 'unauthorized' });
-  if (role && req.session.user.role !== role && req.session.user.role !== 'admin')
-    return res.status(403).json({ error: 'forbidden' });
-  next();
-};
+// Serve public files – panoramas with long cache
+app.use('/uploads', express.static(UPLOAD_PATH, { maxAge: '7d' }));
+app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h' }));
 
 /* ────────────────────────────────────────────────
-   AUTH ROUTES
+   MIDDLEWARE
+──────────────────────────────────────────────── */
+const ROLE_LEVEL = { viewer: 1, editor: 2, admin: 3 };
+
+function requireAuth(minRole = 'viewer') {
+  return (req, res, next) => {
+    if (!req.session.user) return res.status(401).json({ error: 'unauthorized' });
+    if ((ROLE_LEVEL[req.session.user.role] || 0) < (ROLE_LEVEL[minRole] || 0))
+      return res.status(403).json({ error: 'forbidden' });
+    next();
+  };
+}
+
+/* ────────────────────────────────────────────────
+   AUTH
 ──────────────────────────────────────────────── */
 app.get('/api/me', (req, res) => {
-  res.json(req.session.user || null);
-});
-
-app.post('/api/login', (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) return res.json({ success: false, error: 'missing' });
-  const user = db.prepare("SELECT * FROM users WHERE LOWER(email)=? AND active=1").get(email.toLowerCase());
-  if (!user || !bcrypt.compareSync(password, user.password))
-    return res.json({ success: false, error: 'invalid' });
-  db.prepare("UPDATE users SET lastLoginAt=CURRENT_TIMESTAMP WHERE id=?").run(user.id);
-  req.session.user = { id: user.id, email: user.email, username: user.username, role: user.role };
-  res.json({ success: true });
-});
-
-app.post('/api/logout', (req, res) => {
-  req.session.destroy();
-  res.json({ success: true });
+  if (!req.session.user) return res.json({ loggedIn: false });
+  res.json({ loggedIn: true, ...req.session.user });
 });
 
 app.post('/api/register', (req, res) => {
   const { email, username, password } = req.body;
-  if (!email || !password || password.length < 8)
-    return res.json({ success: false, error: 'invalid_input' });
-  try {
-    const hash = bcrypt.hashSync(password, BCRYPT_ROUNDS);
-    db.prepare("INSERT INTO users(email,username,password,role) VALUES(?,?,?,?)").run(email.toLowerCase(), username||'User', hash, 'viewer');
-    res.json({ success: true });
-  } catch(e) {
-    res.json({ success: false, error: e.message.includes('UNIQUE') ? 'email_exists' : e.message });
-  }
+  if (!email || !password || !username)
+    return res.json({ success: false, error: 'missing_fields' });
+  if (password.length < 8)
+    return res.json({ success: false, error: 'password_too_short' });
+  if (db.prepare("SELECT id FROM users WHERE email=?").get(email.toLowerCase()))
+    return res.json({ success: false, error: 'email_exists' });
+  const hash = bcrypt.hashSync(password, BCRYPT_ROUNDS);
+  db.prepare("INSERT INTO users(email,username,password) VALUES(?,?,?)").run(email.toLowerCase(), username.trim(), hash);
+  res.json({ success: true });
 });
 
-app.post('/api/forgot', (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.json({ success: false });
-  const user = db.prepare("SELECT id FROM users WHERE LOWER(email)=?").get(email.toLowerCase());
-  if (!user) return res.json({ success: true }); // don't reveal if email exists
-  const token = uuidv4();
-  const expires = Date.now() + 3600 * 1000; // 1 hour
-  db.prepare("INSERT INTO password_resets(token,userId,expires) VALUES(?,?,?)").run(token, user.id, expires);
-  const resetLink = `${BASE_URL}/reset?token=${token}`;
-  sendMail(email, 'Password Reset', `<p><a href="${resetLink}">Click here to reset your password</a></p>`);
+app.post('/api/login', (req, res) => {
+  const { email, password } = req.body;
+  const user = db.prepare("SELECT * FROM users WHERE email=? AND active=1").get((email || '').toLowerCase());
+  if (!user || !bcrypt.compareSync(password, user.password))
+    return res.json({ success: false, error: 'invalid_credentials' });
+  db.prepare("UPDATE users SET lastLoginAt=CURRENT_TIMESTAMP WHERE id=?").run(user.id);
+  req.session.user = { id: user.id, email: user.email, username: user.username, role: user.role };
+  res.json({ success: true, role: user.role, username: user.username });
+});
+
+app.post('/api/logout', (req, res) => {
+  req.session.destroy(() => res.clearCookie('connect.sid').json({ success: true }));
+});
+
+/* ────────────────────────────────────────────────
+   PASSWORD RESET
+──────────────────────────────────────────────── */
+app.post('/api/forgot', async (req, res) => {
+  // Always return success to not reveal existence
   res.json({ success: true });
+  const { email } = req.body;
+  if (!email) return;
+  const user = db.prepare("SELECT * FROM users WHERE email=? AND active=1").get(email.toLowerCase());
+  if (!user) return;
+
+  db.prepare("DELETE FROM password_resets WHERE userId=?").run(user.id);
+  const token   = uuidv4();
+  const expires = Date.now() + 30 * 60 * 1000;
+  db.prepare("INSERT INTO password_resets(token,userId,expires) VALUES(?,?,?)").run(token, user.id, expires);
+
+  const resetLink = `${BASE_URL}/reset.html?token=${token}`;
+  const html = `<!DOCTYPE html><html><body style="font-family:sans-serif;background:#f5f7fa;padding:32px">
+    <div style="max-width:480px;margin:auto;background:#fff;border-radius:16px;padding:32px;box-shadow:0 4px 24px rgba(0,0,0,0.08)">
+      <h2 style="color:#007aff;margin:0 0 8px">Reset Your Password</h2>
+      <p>Hi <strong>${user.username}</strong>,</p>
+      <p>Someone requested a password reset for your Virtual Tour account.<br>Click below to create a new password — this link expires in <strong>30 minutes</strong>.</p>
+      <a href="${resetLink}" style="display:inline-block;margin:20px 0;background:linear-gradient(90deg,#007aff,#33a8ff);color:#fff;padding:14px 32px;border-radius:10px;text-decoration:none;font-weight:700;font-size:16px">Reset Password →</a>
+      <p style="color:#888;font-size:12px">If you didn't request this, you can safely ignore this email.<br>Your password will not be changed.</p>
+    </div></body></html>`;
+
+  try {
+    await sendMail(user.email, '🔒 Reset your Virtual Tour password', html);
+    console.log(`Password reset link for ${user.email}: ${resetLink}`);
+  } catch (e) {
+    console.error('Email send error:', e.message);
+    console.log(`Password reset link: ${resetLink}`);
+  }
 });
 
 app.get('/api/reset/verify', (req, res) => {
@@ -439,17 +467,22 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
+app.listen(PORT, () => console.log(`\n🚀  http://localhost:${PORT}\n`));
+
 /* ────────────────────────────────────────────────
    START SERVER
 ──────────────────────────────────────────────── */
-// Single listen call - supports both Railway and local development
-// Railway uses process.env.PORT and requires 0.0.0.0 binding
-const PORT_TO_USE = process.env.PORT || 3000;
-const BIND_ADDRESS = process.env.NODE_ENV === 'production' ? '0.0.0.0' : 'localhost';
+// สำคัญ: Railway ต้องการให้ใช้ process.env.PORT และรันบน 0.0.0.0
+const PORT_RUN = process.env.PORT || 3000;
 
-app.listen(PORT_TO_USE, BIND_ADDRESS, () => {
-  console.log(`\n✅ Server is running!`);
-  console.log(`🚀 Port: ${PORT_TO_USE}`);
-  console.log(`📍 Binding: ${BIND_ADDRESS}`);
-  console.log(`🔗 URL: ${process.env.BASE_URL || 'http://localhost:' + PORT_TO_USE}\n`);
+app.listen(PORT_RUN, '0.0.0.0', () => {
+  console.log(`\n✅ Server is perfectly running!`);
+  console.log(`🚀 Port: ${PORT_RUN}`);
+  console.log(`🔗 URL: ${process.env.BASE_URL || 'http://localhost:' + PORT_RUN}\n`);
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ error: 'Something went wrong!' });
 });
