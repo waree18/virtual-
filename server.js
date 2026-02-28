@@ -5,7 +5,6 @@ const SQLiteStore  = require('connect-sqlite3')(session);
 const bcrypt       = require('bcrypt');
 const Database     = require('better-sqlite3');
 const multer       = require('multer');
-const nodemailer   = require('nodemailer');
 const { v4: uuidv4 } = require('uuid');
 const path         = require('path');
 const fs           = require('fs');
@@ -30,11 +29,8 @@ const BASE_URL       = process.env.BASE_URL       || `http://localhost:${PORT}`;
 const SESSION_SECRET = process.env.SESSION_SECRET || 'CHANGE_THIS_IN_PROD_' + Date.now();
 const BCRYPT_ROUNDS  = parseInt(process.env.BCRYPT_ROUNDS || '12');
 
-const SMTP_HOST = process.env.SMTP_HOST || '';
-const SMTP_PORT = parseInt(process.env.SMTP_PORT || '587');
-const SMTP_USER = process.env.SMTP_USER || '';
-const SMTP_PASS = process.env.SMTP_PASS || '';
-const MAIL_FROM = process.env.MAIL_FROM || SMTP_USER || 'noreply@virtualtour.app';
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+const MAIL_FROM = process.env.MAIL_FROM || 'onboarding@resend.dev';
 
 /* ────────────────────────────────────────────────
    DIRECTORIES
@@ -121,23 +117,32 @@ if (!db.prepare("SELECT id FROM users WHERE email=?").get('admin@vt.com')) {
 }
 
 /* ────────────────────────────────────────────────
-   EMAIL
+   EMAIL  (Resend HTTP API – works on Railway)
 ──────────────────────────────────────────────── */
-let mailer = null;
-if (SMTP_HOST && SMTP_USER) {
-  mailer = nodemailer.createTransport({
-    host: SMTP_HOST, port: SMTP_PORT, secure: SMTP_PORT === 465,
-    auth: { user: SMTP_USER, pass: SMTP_PASS }
-  });
-  mailer.verify().then(() => console.log('✅ SMTP ready')).catch(e => console.warn('⚠ SMTP:', e.message));
+if (RESEND_API_KEY) {
+  console.log('✅ Resend API key loaded');
+} else {
+  console.warn('⚠ No RESEND_API_KEY set – emails will be logged to console only');
 }
 
 async function sendMail(to, subject, html) {
-  if (mailer) {
-    await mailer.sendMail({ from: MAIL_FROM, to, subject, html });
-  } else {
-    console.log(`\n📧 [DEV – no SMTP] To: ${to} | Subject: ${subject}\nLink in HTML above ↑\n${html}\n`);
+  if (!RESEND_API_KEY) {
+    console.log(`\n📧 [DEV – no API key] To: ${to} | Subject: ${subject}\n${html}\n`);
+    return;
   }
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${RESEND_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ from: MAIL_FROM, to, subject, html })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`Resend API error ${res.status}: ${err.message || JSON.stringify(err)}`);
+  }
+  return res.json();
 }
 
 /* ────────────────────────────────────────────────
