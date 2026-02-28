@@ -468,3 +468,21 @@ app.use((err, _req, res, _next) => {
 });
 
 app.listen(PORT, () => console.log(`\n🚀  http://localhost:${PORT}\n`));
+
+/* ────────────────────────────────────────────────
+   START SERVER
+──────────────────────────────────────────────── */
+// สำคัญ: Railway ต้องการให้ใช้ process.env.PORT และรันบน 0.0.0.0
+const PORT_RUN = process.env.PORT || 3000;
+
+app.listen(PORT_RUN, '0.0.0.0', () => {
+  console.log(`\n✅ Server is perfectly running!`);
+  console.log(`🚀 Port: ${PORT_RUN}`);
+  console.log(`🔗 URL: ${process.env.BASE_URL || 'http://localhost:' + PORT_RUN}\n`);
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ error: 'Something went wrong!' });
+});

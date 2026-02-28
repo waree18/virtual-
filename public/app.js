@@ -15,7 +15,7 @@
         autoLoad: true
       },
       scenes: scenes,
-      orientationOnByDefault: true // ให้หมุนตามมือถืออัตโนมัติ
+      orientationOnByDefault: true // เปิดใช้งาน Gyroscope เตรียมไว้
     });
 
     function updateTitle(sceneId) {
@@ -30,7 +30,7 @@
     viewer.on('scenechange', (sceneId) => updateTitle(sceneId));
     updateTitle(ids[0]);
 
-    // ปุ่มนำทาง
+    // ปุ่ม Next / Prev
     document.getElementById('prevBtn').onclick = () => {
       const cur = viewer.getScene(); const i = ids.indexOf(cur);
       viewer.loadScene(ids[(i - 1 + ids.length) % ids.length]);
@@ -41,10 +41,10 @@
     };
 
     // ==========================================
-    // แยกปุ่ม Fullscreen และ VR ให้ชัดเจน
+    // แยกปุ่ม Fullscreen และ VR ให้ทำงานอิสระ
     // ==========================================
 
-    // ปุ่ม Fullscreen (id="fsBtn")
+    // 1. ปุ่ม Fullscreen (id="fsBtn")
     const fsBtn = document.getElementById('fsBtn');
     if (fsBtn) {
       fsBtn.onclick = () => {
@@ -53,38 +53,40 @@
       };
     }
 
-    // ปุ่ม VR (id="vrBtn")
+    // 2. ปุ่ม VR (id="vrBtn") - พร้อมขอสิทธิ์เซนเซอร์
     const vrBtn = document.getElementById('vrBtn');
     if (vrBtn) {
       vrBtn.onclick = () => {
-        // ขออนุญาตเข้าถึงเซนเซอร์ (รองรับทั้ง iOS และ Android รุ่นใหม่)
+        // กรณี iOS 13+ หรือเบราว์เซอร์ที่ต้องขอสิทธิ์ Motion Sensor
         if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
           DeviceOrientationEvent.requestPermission()
-            .then(permissionState => {
-              if (permissionState === 'granted') {
-                startVR();
+            .then(response => {
+              if (response == 'granted') {
+                enableVRMode();
               } else {
-                alert("กรุณาอนุญาตการเข้าถึง Motion Sensor เพื่อใช้โหมด VR");
+                alert("กรุณาอนุญาตการเข้าถึง Motion Sensor เพื่อใช้งาน VR");
               }
             })
             .catch(console.error);
         } else {
-          // สำหรับเบราว์เซอร์ที่ไม่ต้องขอ Permission (Android ส่วนใหญ่)
-          startVR();
+          // สำหรับ Android ทั่วไป
+          enableVRMode();
         }
       };
     }
 
-    function startVR() {
+    function enableVRMode() {
       try {
-        viewer.toggleStereo(); // แยกหน้าจอ
-        if (!viewer.isFullscreen()) viewer.toggleFullscreen(); // ขยายเต็มจอ
-      } catch (e) {
-        alert("เบราว์เซอร์ของคุณไม่รองรับโหมด VR หรือไม่ได้รันบน HTTPS");
+        viewer.toggleStereo(); // แยก 2 หน้าจอ
+        if (!viewer.isFullscreen()) {
+          viewer.toggleFullscreen(); // เข้าโหมดเต็มจอปิดแถบ URL
+        }
+      } catch (err) {
+        alert("ไม่รองรับการแสดงผล VR บนอุปกรณ์นี้");
       }
     }
 
   } catch (e) {
-    console.error("Error loading scenes:", e);
+    console.error("Initialization Error:", e);
   }
 })();
