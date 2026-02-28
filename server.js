@@ -197,7 +197,7 @@ app.use(session({
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 86400000, httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production' }
+  cookie: { maxAge: 86400000, httpOnly: true, sameSite: 'lax', secure: process.env.HTTPS === 'true' }
 }));
 
 // Serve public files – panoramas with long cache
@@ -467,22 +467,10 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-app.listen(PORT, () => console.log(`\n🚀  http://localhost:${PORT}\n`));
-
 /* ────────────────────────────────────────────────
    START SERVER
 ──────────────────────────────────────────────── */
-// สำคัญ: Railway ต้องการให้ใช้ process.env.PORT และรันบน 0.0.0.0
-const PORT_RUN = process.env.PORT || 3000;
-
-app.listen(PORT_RUN, '0.0.0.0', () => {
-  console.log(`\n✅ Server is perfectly running!`);
-  console.log(`🚀 Port: ${PORT_RUN}`);
-  console.log(`🔗 URL: ${process.env.BASE_URL || 'http://localhost:' + PORT_RUN}\n`);
-});
-
-// Global error handler
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong!' });
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`\n✅ Server running on port ${PORT}`);
+  console.log(`🔗 URL: ${BASE_URL}\n`);
 });

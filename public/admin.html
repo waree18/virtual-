@@ -6,6 +6,23 @@
 <title>Admin — Virtual Tour</title>
 <link rel="stylesheet" href="/style.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css">
+<script>
+// Check authentication immediately
+(async () => {
+  try {
+    const res = await fetch('/api/me');
+    const user = await res.json();
+    console.log('Admin page - Current user:', user);
+    if (!user || !user.loggedIn || (user.role !== 'admin' && user.role !== 'editor')) {
+      console.log('Not authorized. Redirecting to login.');
+      window.location.href = '/login.html';
+    }
+  } catch (e) {
+    console.error('Auth check failed:', e);
+    window.location.href = '/login.html';
+  }
+})();
+</script>
 </head>
 <body class="admin-body">
 

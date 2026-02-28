@@ -57,8 +57,11 @@ async function login() {
 
     if (data.success) {
       showMsg('Welcome back, ' + (data.username || 'User') + '!', 'success');
+      console.log('Login successful. User role:', data.role, 'Full data:', data);
       setTimeout(() => {
-        location.href = data.role === 'admin' || data.role === 'editor' ? '/admin.html' : '/tour.html';
+        const redirectUrl = data.role === 'admin' || data.role === 'editor' ? '/admin.html' : '/tour.html';
+        console.log('Redirecting to:', redirectUrl);
+        location.href = redirectUrl;
       }, 600);
     } else {
       const msgs = {
