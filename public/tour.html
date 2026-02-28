@@ -377,152 +377,274 @@ function openInfo(title,body) {
 }
 function closeInfo() { document.getElementById('infoPopup').classList.remove('visible'); }
 
-/* ══ VR ══ */
-// vrLeft/vrRight = two Pannellum instances for split-screen stereo
-// viewer.toggleStereo() does NOT exist in Pannellum 2.5.6 — never use it
-let vrLeft = null, vrRight = null, vrContainer = null;
-let vrSyncTimer = null, vrGyroHandler = null;
-const VR_IPD = 1.8; // yaw offset in degrees between eyes
+/* ══ VR ══ — Real Google Cardboard barrel-distortion stereo ══ */
+/*
+  HOW IT WORKS:
+  1. Two hidden <div>s each host a real Pannellum instance (left/right eye).
+     Pannellum MUST be created with preserveDrawingBuffer patched — we do
+     this by intercepting WebGLRenderingContext.getContext on those divs.
+  2. A visible fullscreen <canvas> runs a WebGL fragment shader every frame.
+     The shader reads both eye textures, applies Cardboard barrel distortion,
+     and outputs them side-by-side.
+  3. Gyroscope drives setPitch/setYaw on both Pannellum instances.
+*/
 
-function openVrModal() { if(vrMode){doExitVR();return;} document.getElementById('vrModal').classList.add('visible'); }
-function closeVrModal() { document.getElementById('vrModal').classList.remove('visible'); }
+let vrLeft=null, vrRight=null, vrContainer=null, vrLeftDiv=null, vrRightDiv=null;
+let vrSyncTimer=null, vrGyroHandler=null;
+let vrGLCanvas=null, vrGL=null, vrProgram=null;
+let vrTexL=null, vrTexR=null, vrRafId=null;
+const VR_IPD=1.8; // degrees yaw offset per eye
 
-async function doEnterVR() {
-  closeVrModal();
-  if(!viewer) return;
+// Barrel distortion coefficients for Google Cardboard v2 lenses
+const K1=0.22, K2=0.24;
 
-  // iOS 13+ requires explicit permission for gyroscope
-  if(typeof DeviceOrientationEvent!=='undefined' && typeof DeviceOrientationEvent.requestPermission==='function'){
-    try{
-      const p = await DeviceOrientationEvent.requestPermission();
-      if(p!=='granted'){ alert('Gyroscope permission required for VR.'); return; }
-    }catch(e){ console.warn('Gyro permission error:', e); }
+function openVrModal(){if(vrMode){doExitVR();return;}document.getElementById('vrModal').classList.add('visible');}
+function closeVrModal(){document.getElementById('vrModal').classList.remove('visible');}
+
+/* ── patch getContext so Pannellum uses preserveDrawingBuffer=true ── */
+function patchedGetContext(origFn, el){
+  return function(type, attrs){
+    if(type==='webgl'||type==='experimental-webgl'){
+      attrs = Object.assign({}, attrs||{}, {preserveDrawingBuffer:true});
+    }
+    return origFn.call(el, type, attrs);
+  };
+}
+
+async function doEnterVR(){
+  closeVrModal(); if(!viewer) return;
+
+  // iOS gyro permission
+  if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
+    try{const p=await DeviceOrientationEvent.requestPermission();if(p!=='granted'){alert('Gyroscope permission required.');return;}}catch(e){console.warn(e);}
   }
 
-  vrMode = true;
+  vrMode=true;
   document.getElementById('btnVR').classList.add('vr-on');
 
-  // Get current panorama + view state
-  const sceneId = ids[curIdx];
-  const s = scenes[sceneId];
-  let curYaw=0, curPitch=0, curHfov=100;
-  try { curYaw=viewer.getYaw(); curPitch=viewer.getPitch(); curHfov=viewer.getHfov(); } catch(_){}
+  const sceneId=ids[curIdx], s=scenes[sceneId];
+  let cYaw=0,cPitch=0,cHfov=100;
+  try{cYaw=viewer.getYaw();cPitch=viewer.getPitch();cHfov=viewer.getHfov();}catch(_){}
 
-  // Hide main viewer + UI
-  document.getElementById('viewer').style.visibility = 'hidden';
+  // Hide main UI
+  document.getElementById('viewer').style.visibility='hidden';
   ['topbar','controls','counter','sbTab','sidebar','sbBackdrop'].forEach(id=>{
-    const el=document.getElementById(id); if(el) el.style.display='none';
+    const el=document.getElementById(id);if(el)el.style.display='none';
   });
 
-  // Build split-screen container
-  vrContainer = document.createElement('div');
-  Object.assign(vrContainer.style, {
-    position:'fixed', inset:'0', zIndex:'8000',
-    display:'flex', flexDirection:'row', background:'#000', overflow:'hidden'
-  });
+  // Container holds everything
+  vrContainer=document.createElement('div');
+  Object.assign(vrContainer.style,{position:'fixed',inset:'0',zIndex:'8000',background:'#000',overflow:'hidden'});
 
-  const leftDiv  = document.createElement('div');
-  const rightDiv = document.createElement('div');
-  [leftDiv, rightDiv].forEach(d => Object.assign(d.style, {
-    width:'50%', height:'100%', position:'relative', overflow:'hidden', flexShrink:'0'
+  // Two hidden offscreen divs for Pannellum (must be in DOM for WebGL)
+  const leftDiv=document.createElement('div');
+  const rightDiv=document.createElement('div');
+  [leftDiv,rightDiv].forEach(d=>Object.assign(d.style,{
+    position:'absolute',width:'50%',height:'100%',top:'0',visibility:'hidden',pointerEvents:'none'
   }));
+  leftDiv.style.left='0'; rightDiv.style.left='50%';
 
-  // Nose-bridge divider
-  const divider = document.createElement('div');
-  Object.assign(divider.style, {
-    position:'absolute', left:'50%', top:'0', bottom:'0',
-    width:'4px', background:'#000', transform:'translateX(-50%)',
-    zIndex:'8002', pointerEvents:'none'
+  // The output canvas — this is what user sees
+  vrGLCanvas=document.createElement('canvas');
+  vrGLCanvas.width=screen.width||window.innerWidth;
+  vrGLCanvas.height=screen.height||window.innerHeight;
+  Object.assign(vrGLCanvas.style,{position:'absolute',inset:'0',width:'100%',height:'100%',zIndex:'1'});
+
+  // Exit button
+  const exitBtn=document.createElement('button');
+  exitBtn.textContent='✕ Exit VR';
+  Object.assign(exitBtn.style,{
+    position:'absolute',bottom:'20px',left:'50%',transform:'translateX(-50%)',
+    zIndex:'9',padding:'10px 26px',background:'rgba(0,0,0,0.7)',color:'#fff',
+    border:'1.5px solid rgba(255,255,255,0.4)',borderRadius:'30px',
+    fontSize:'14px',fontWeight:'700',cursor:'pointer',fontFamily:'inherit'
   });
+  exitBtn.addEventListener('click',doExitVR);
 
-  // Exit button — visible, tappable
-  const exitBtn = document.createElement('button');
-  exitBtn.textContent = '✕ Exit VR';
-  Object.assign(exitBtn.style, {
-    position:'absolute', bottom:'20px', left:'50%', transform:'translateX(-50%)',
-    zIndex:'8003', padding:'10px 26px',
-    background:'rgba(0,0,0,0.7)', color:'#fff',
-    border:'1.5px solid rgba(255,255,255,0.4)', borderRadius:'30px',
-    fontSize:'14px', fontWeight:'700', cursor:'pointer', fontFamily:'inherit'
-  });
-  exitBtn.addEventListener('click', doExitVR);
-
+  vrLeftDiv=leftDiv; vrRightDiv=rightDiv;
   vrContainer.appendChild(leftDiv);
   vrContainer.appendChild(rightDiv);
-  vrContainer.appendChild(divider);
+  vrContainer.appendChild(vrGLCanvas);
   vrContainer.appendChild(exitBtn);
   document.body.appendChild(vrContainer);
 
-  // Create two real Pannellum instances — one per eye
-  const baseCfg = {
-    type:'equirectangular', panorama: s.panorama,
-    autoLoad:true, showControls:false, compass:false,
-    pitch:curPitch, hfov:curHfov,
-    orientationOnByDefault:false
-  };
-  vrLeft  = pannellum.viewer(leftDiv,  { ...baseCfg, yaw: curYaw - VR_IPD });
-  vrRight = pannellum.viewer(rightDiv, { ...baseCfg, yaw: curYaw + VR_IPD });
-
-  // Gyroscope drives both eyes
-  let tYaw=curYaw, tPitch=curPitch;
-  vrGyroHandler = (e) => {
-    if(!vrMode || e.alpha===null) return;
-    const angle = screen.orientation?.angle ?? window.orientation ?? 0;
-    if(Math.abs(angle)===90){
-      tYaw   =  (e.alpha||0);
-      tPitch = -(e.gamma||0);
-    } else {
-      tYaw   =  (e.alpha||0);
-      tPitch =  (e.beta||0) - 90;
+  // Patch getContext on both hidden canvases BEFORE pannellum init
+  // We patch at the div level by overriding createElement temporarily
+  const origCreate=document.createElement.bind(document);
+  let patchActive=true;
+  document.createElement=function(tag){
+    const el=origCreate(tag);
+    if(tag.toLowerCase()==='canvas'&&patchActive){
+      const orig=el.getContext.bind(el);
+      el.getContext=patchedGetContext(orig,el);
     }
-    tPitch = Math.max(-85, Math.min(85, tPitch));
+    return el;
   };
-  window.addEventListener('deviceorientation', vrGyroHandler, true);
 
-  // Sync loop ~60fps
-  vrSyncTimer = setInterval(()=>{
-    if(!vrMode) return;
-    try{ vrLeft.setPitch(tPitch);  vrLeft.setYaw(tYaw - VR_IPD);  }catch(_){}
-    try{ vrRight.setPitch(tPitch); vrRight.setYaw(tYaw + VR_IPD); }catch(_){}
-  }, 16);
+  const baseCfg={type:'equirectangular',panorama:s.panorama,autoLoad:true,
+    showControls:false,compass:false,pitch:cPitch,hfov:cHfov,
+    orientationOnByDefault:false};
 
-  // Fullscreen + landscape lock
-  try{
-    const root=document.documentElement;
-    if(root.requestFullscreen) await root.requestFullscreen().catch(()=>{});
-    else if(root.webkitRequestFullscreen) root.webkitRequestFullscreen();
-  }catch(_){}
-  try{ await screen.orientation.lock('landscape'); }catch(_){}
+  vrLeft =pannellum.viewer(leftDiv, {...baseCfg, yaw:cYaw-VR_IPD});
+  vrRight=pannellum.viewer(rightDiv,{...baseCfg, yaw:cYaw+VR_IPD});
+  patchActive=false;
+  document.createElement=origCreate; // restore
+
+  // Setup output WebGL (barrel distortion shader)
+  vrGL=vrGLCanvas.getContext('webgl',{antialias:false});
+  if(!vrGL){
+    // WebGL unavailable — fall back to plain 2D split screen
+    fallback2DStereo(leftDiv,rightDiv,vrGLCanvas);
+  } else {
+    setupDistortionGL(vrGL, vrGLCanvas.width, vrGLCanvas.height);
+    startVRRenderLoop();
+  }
+
+  // Gyroscope
+  let tYaw=cYaw, tPitch=cPitch;
+  vrGyroHandler=(e)=>{
+    if(!vrMode||e.alpha===null) return;
+    const ang=screen.orientation?.angle??window.orientation??0;
+    if(Math.abs(ang)===90){tYaw=e.alpha||0;tPitch=-(e.gamma||0);}
+    else{tYaw=e.alpha||0;tPitch=(e.beta||0)-90;}
+    tPitch=Math.max(-85,Math.min(85,tPitch));
+  };
+  window.addEventListener('deviceorientation',vrGyroHandler,true);
+
+  vrSyncTimer=setInterval(()=>{
+    if(!vrMode)return;
+    try{vrLeft.setPitch(tPitch); vrLeft.setYaw(tYaw-VR_IPD);}catch(_){}
+    try{vrRight.setPitch(tPitch);vrRight.setYaw(tYaw+VR_IPD);}catch(_){}
+  },16);
+
+  // Fullscreen + landscape
+  try{const r=document.documentElement;if(r.requestFullscreen)await r.requestFullscreen().catch(()=>{});else if(r.webkitRequestFullscreen)r.webkitRequestFullscreen();}catch(_){}
+  try{await screen.orientation.lock('landscape');}catch(_){}
 }
 
-function doExitVR() {
-  if(!vrMode) return;
-  vrMode = false;
+function setupDistortionGL(gl, W, H){
+  // Simple barrel distortion vertex + fragment shader
+  const vsrc=`
+    attribute vec2 a_pos;
+    varying vec2 v_uv;
+    void main(){v_uv=a_pos*0.5+0.5;gl_Position=vec4(a_pos,0,1);}
+  `;
+  // Each eye occupies half the screen; distort UV within each half
+  const fsrc=`
+    precision mediump float;
+    uniform sampler2D u_texL;
+    uniform sampler2D u_texR;
+    uniform float u_k1;
+    uniform float u_k2;
+    varying vec2 v_uv;
+
+    vec2 distort(vec2 uv){
+      // uv in [-1,1] space centered on eye
+      float r2=dot(uv,uv);
+      float factor=1.0+u_k1*r2+u_k2*r2*r2;
+      return uv*factor;
+    }
+
+    void main(){
+      bool isRight = v_uv.x > 0.5;
+      // Eye-local UV in [0,1]
+      vec2 eyeUV = isRight ? vec2((v_uv.x-0.5)*2.0, v_uv.y)
+                           : vec2(v_uv.x*2.0,        v_uv.y);
+      // To [-1,1] centered
+      vec2 c = eyeUV*2.0-1.0;
+      // Undistort (inverse barrel = pincushion on input coords)
+      vec2 dc = distort(c);
+      // Back to [0,1]
+      vec2 tc = (dc+1.0)*0.5;
+      // Discard if outside
+      if(tc.x<0.0||tc.x>1.0||tc.y<0.0||tc.y>1.0){gl_FragColor=vec4(0,0,0,1);return;}
+      if(isRight) gl_FragColor=texture2D(u_texR,tc);
+      else        gl_FragColor=texture2D(u_texL,tc);
+    }
+  `;
+  function compile(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);return s;}
+  vrProgram=gl.createProgram();
+  gl.attachShader(vrProgram,compile(gl.VERTEX_SHADER,vsrc));
+  gl.attachShader(vrProgram,compile(gl.FRAGMENT_SHADER,fsrc));
+  gl.linkProgram(vrProgram);
+  gl.useProgram(vrProgram);
+
+  // Full-screen quad
+  const buf=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+  const loc=gl.getAttribLocation(vrProgram,'a_pos');
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+
+  // Uniforms
+  gl.uniform1i(gl.getUniformLocation(vrProgram,'u_texL'),0);
+  gl.uniform1i(gl.getUniformLocation(vrProgram,'u_texR'),1);
+  gl.uniform1f(gl.getUniformLocation(vrProgram,'u_k1'),K1);
+  gl.uniform1f(gl.getUniformLocation(vrProgram,'u_k2'),K2);
+
+  // Create two textures
+  function makeTex(unit){
+    gl.activeTexture(unit);
+    const t=gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D,t);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+    return t;
+  }
+  vrTexL=makeTex(gl.TEXTURE0);
+  vrTexR=makeTex(gl.TEXTURE1);
+}
+
+function startVRRenderLoop(){
+  function frame(){
+    if(!vrMode||!vrGL){return;}
+    // Get Pannellum canvases
+    const cL=vrLeft?.getContainer()?.querySelector('canvas');
+    const cR=vrRight?.getContainer()?.querySelector('canvas');
+    if(cL&&cL.width>0){
+      vrGL.activeTexture(vrGL.TEXTURE0);
+      vrGL.bindTexture(vrGL.TEXTURE_2D,vrTexL);
+      try{vrGL.texImage2D(vrGL.TEXTURE_2D,0,vrGL.RGBA,vrGL.RGBA,vrGL.UNSIGNED_BYTE,cL);}catch(_){}
+    }
+    if(cR&&cR.width>0){
+      vrGL.activeTexture(vrGL.TEXTURE1);
+      vrGL.bindTexture(vrGL.TEXTURE_2D,vrTexR);
+      try{vrGL.texImage2D(vrGL.TEXTURE_2D,0,vrGL.RGBA,vrGL.RGBA,vrGL.UNSIGNED_BYTE,cR);}catch(_){}
+    }
+    vrGL.viewport(0,0,vrGLCanvas.width,vrGLCanvas.height);
+    vrGL.drawArrays(vrGL.TRIANGLE_STRIP,0,4);
+    vrRafId=requestAnimationFrame(frame);
+  }
+  vrRafId=requestAnimationFrame(frame);
+}
+
+function fallback2DStereo(leftDiv,rightDiv,canvas){
+  // Plain 2D split screen if WebGL unavailable
+  leftDiv.style.visibility='visible';
+  rightDiv.style.visibility='visible';
+  canvas.style.display='none';
+}
+
+function doExitVR(){
+  if(!vrMode)return;
+  vrMode=false;
   document.getElementById('btnVR').classList.remove('vr-on');
-
-  if(vrSyncTimer){ clearInterval(vrSyncTimer); vrSyncTimer=null; }
-  if(vrGyroHandler){ window.removeEventListener('deviceorientation', vrGyroHandler, true); vrGyroHandler=null; }
-
-  try{ if(vrLeft)  vrLeft.destroy();  }catch(_){} vrLeft=null;
-  try{ if(vrRight) vrRight.destroy(); }catch(_){} vrRight=null;
-  if(vrContainer){ vrContainer.remove(); vrContainer=null; }
-
-  // Restore UI
+  if(vrRafId){cancelAnimationFrame(vrRafId);vrRafId=null;}
+  if(vrSyncTimer){clearInterval(vrSyncTimer);vrSyncTimer=null;}
+  if(vrGyroHandler){window.removeEventListener('deviceorientation',vrGyroHandler,true);vrGyroHandler=null;}
+  try{if(vrLeft)vrLeft.destroy();}catch(_){}vrLeft=null;
+  try{if(vrRight)vrRight.destroy();}catch(_){}vrRight=null;
+  if(vrContainer){vrContainer.remove();vrContainer=null;}
+  vrGLCanvas=null;vrGL=null;vrProgram=null;vrTexL=null;vrTexR=null;vrLeftDiv=null;vrRightDiv=null;
   document.getElementById('viewer').style.visibility='';
-  ['topbar','controls','counter','sbTab'].forEach(id=>{
-    const el=document.getElementById(id); if(el) el.style.display='';
+  ['topbar','controls','counter','sbTab','sidebar'].forEach(id=>{
+    const el=document.getElementById(id);if(el)el.style.display='';
   });
-  // Restore sidebar based on sbOpen state
-  const sb=document.getElementById('sidebar');
-  if(sb) sb.style.display='';
-  const back=document.getElementById('sbBackdrop');
-  if(back) back.style.display='';
-
-  try{
-    if(document.exitFullscreen) document.exitFullscreen().catch(()=>{});
-    else if(document.webkitExitFullscreen) document.webkitExitFullscreen();
-  }catch(_){}
-  try{ screen.orientation.unlock(); }catch(_){}
+  try{if(document.exitFullscreen)document.exitFullscreen().catch(()=>{});else if(document.webkitExitFullscreen)document.webkitExitFullscreen();}catch(_){}
+  try{screen.orientation.unlock();}catch(_){}
 }
 
 /* ══ UI ══ */
