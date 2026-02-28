@@ -157,8 +157,22 @@
       });
 
       // 5. Gyroscope handler
-      let targetYaw   = cfg.yaw;
-      let targetPitch = cfg.pitch;
+      let targetYaw    = cfg.yaw;
+      let targetPitch  = cfg.pitch;
+      let currentYaw   = cfg.yaw;
+      let currentPitch = cfg.pitch;
+
+      // lerp helper – ค่า SMOOTH ยิ่งสูงยิ่งตอบสนองเร็ว ยิ่งน้อยยิ่งลื่น
+      const lerp = (a, b, t) => a + (b - a) * t;
+      const SMOOTH = 0.12; // ปรับได้: 0.05 = นุ่มมาก, 0.25 = ตอบสนองเร็ว
+
+      // yaw lerp ต้องจัดการ wrap-around 0°↔360°
+      function lerpYaw(a, b, t) {
+        let diff = b - a;
+        if (diff >  180) diff -= 360;
+        if (diff < -180) diff += 360;
+        return a + diff * t;
+      }
 
       gyroHandler = (e) => {
         if (!vrMode || e.alpha === null) return;
@@ -178,11 +192,13 @@
 
       window.addEventListener('deviceorientation', gyroHandler, true);
 
-      // 6. Sync both viewers to gyro at ~60fps
+      // 6. Sync loop พร้อม lerp smoothing ที่ ~60fps
       vrSyncTimer = setInterval(() => {
         if (!vrMode) return;
-        try { vrLeft.setPitch(targetPitch);  vrLeft.setYaw(targetYaw - IPD_YAW);  } catch(_){}
-        try { vrRight.setPitch(targetPitch); vrRight.setYaw(targetYaw + IPD_YAW); } catch(_){}
+        currentYaw   = lerpYaw(currentYaw,   targetYaw,   SMOOTH);
+        currentPitch = lerp(currentPitch, targetPitch, SMOOTH);
+        try { vrLeft.setPitch(currentPitch);  vrLeft.setYaw(currentYaw - IPD_YAW);  } catch(_){}
+        try { vrRight.setPitch(currentPitch); vrRight.setYaw(currentYaw + IPD_YAW); } catch(_){}
       }, 16);
 
       // 7. Fullscreen + landscape lock
