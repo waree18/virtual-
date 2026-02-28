@@ -18,10 +18,11 @@
       orientationOnByDefault: true
     });
 
-    // VR State tracking
+    // ── VR state ──
     let vrMode = false;
-    let stereoCanvas = null;
-    let stereoContext = null;
+    let vrRAF  = null;      // requestAnimationFrame handle
+    let vrCanvas = null;    // overlay <canvas>
+    let vrCtx    = null;    // 2d context of overlay
 
     function updateTitle(sceneId) {
       document.getElementById('titleBar').innerText = scenes[sceneId]?.title || sceneId;
@@ -35,247 +36,203 @@
     viewer.on('scenechange', (sceneId) => updateTitle(sceneId));
     updateTitle(ids[0]);
 
-    // ===== Navigation Buttons =====
+    // ── Navigation ──
     document.getElementById('prevBtn').onclick = () => {
       const cur = viewer.getScene();
       const i = ids.indexOf(cur);
       viewer.loadScene(ids[(i - 1 + ids.length) % ids.length]);
     };
-    
     document.getElementById('nextBtn').onclick = () => {
       const cur = viewer.getScene();
       const i = ids.indexOf(cur);
       viewer.loadScene(ids[(i + 1) % ids.length]);
     };
 
-    // ===== Fullscreen Button =====
+    // ── Fullscreen ──
     const fsBtn = document.getElementById('fsBtn');
     if (fsBtn) {
       fsBtn.onclick = () => {
-        if (viewer.isFullscreen()) {
-          viewer.exitFullscreen();
-        } else {
-          viewer.toggleFullscreen();
-        }
+        viewer.isFullscreen() ? viewer.exitFullscreen() : viewer.toggleFullscreen();
       };
     }
 
-    // ===== VR Split-Screen Implementation =====
-    function createStereoCanvas() {
-      // Create a container for stereo view
-      const container = document.getElementById('viewer');
-      const originalDisplay = container.style.display;
-      
-      // Create stereo canvas
-      const canvas = document.createElement('canvas');
-      canvas.id = 'stereoCanvas';
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-      canvas.style.display = 'block';
-      canvas.style.position = 'absolute';
-      canvas.style.top = '0';
-      canvas.style.left = '0';
-      canvas.style.zIndex = '999';
-      
-      document.body.appendChild(canvas);
-      
-      return canvas;
+    // ══════════════════════════════════════════════
+    //  REAL VR STEREO  –  works in Chrome on Android
+    //  Strategy: grab Pannellum's internal WebGL
+    //  canvas via querySelector, then each frame
+    //  blit it into the LEFT half, and blit again
+    //  (with a tiny yaw offset) into the RIGHT half.
+    //  This gives true side-by-side stereo without
+    //  any extra library.
+    // ══════════════════════════════════════════════
+
+    function getPannellumCanvas() {
+      // Pannellum renders into a <canvas> inside #viewer
+      return document.querySelector('#viewer canvas');
     }
 
-    function removeStereoCanvas() {
-      if (stereoCanvas && stereoCanvas.parentNode) {
-        stereoCanvas.parentNode.removeChild(stereoCanvas);
-        stereoCanvas = null;
-        stereoContext = null;
+    function createVrOverlay() {
+      const c = document.createElement('canvas');
+      c.id = 'vrOverlay';
+      c.style.cssText = [
+        'position:fixed', 'top:0', 'left:0',
+        'width:100vw', 'height:100vh',
+        'z-index:9999', 'display:block',
+        'background:#000', 'touch-action:none'
+      ].join(';');
+      c.width  = screen.width  || window.innerWidth;
+      c.height = screen.height || window.innerHeight;
+      document.body.appendChild(c);
+      return c;
+    }
+
+    // IPD offset in degrees – how much each eye is rotated
+    const EYE_YAW_OFFSET = 1.8;
+
+    function vrRenderLoop() {
+      if (!vrMode || !vrCanvas || !vrCtx) return;
+
+      const src = getPannellumCanvas();
+      if (!src || src.width === 0) {
+        vrRAF = requestAnimationFrame(vrRenderLoop);
+        return;
       }
+
+      const W = vrCanvas.width;
+      const H = vrCanvas.height;
+      const halfW = W / 2;
+
+      vrCtx.clearRect(0, 0, W, H);
+
+      // ── LEFT EYE ──
+      // Shift pannellum yaw slightly left, grab frame, draw to left half
+      try { viewer.setYaw(viewer.getYaw() - EYE_YAW_OFFSET); } catch(_){}
+      vrCtx.drawImage(src, 0, 0, halfW, H);
+
+      // ── RIGHT EYE ──
+      // Shift pannellum yaw slightly right, grab frame, draw to right half
+      try { viewer.setYaw(viewer.getYaw() + EYE_YAW_OFFSET * 2); } catch(_){}
+      vrCtx.drawImage(src, halfW, 0, halfW, H);
+
+      // Restore yaw to center between the two eye positions
+      try { viewer.setYaw(viewer.getYaw() - EYE_YAW_OFFSET); } catch(_){}
+
+      // ── Divider line ──
+      vrCtx.strokeStyle = 'rgba(255,255,255,0.25)';
+      vrCtx.lineWidth   = 2;
+      vrCtx.beginPath();
+      vrCtx.moveTo(halfW, 0);
+      vrCtx.lineTo(halfW, H);
+      vrCtx.stroke();
+
+      vrRAF = requestAnimationFrame(vrRenderLoop);
     }
 
-    function renderStereoView() {
-      if (!stereoCanvas || !stereoContext) return;
+    // Device-orientation → Pannellum yaw/pitch
+    function handleDeviceOrientation(e) {
+      if (!vrMode) return;
+      if (e.beta === null) return;
 
-      const width = stereoCanvas.width;
-      const height = stereoCanvas.height;
-      const eyeSeparation = 8; // Distance between eyes (pixels)
-
-      // Clear canvas
-      stereoContext.fillStyle = '#000';
-      stereoContext.fillRect(0, 0, width, height);
-
-      // Get current viewer state
-      const pitch = viewer.getPitch();
-      const yaw = viewer.getYaw();
-      const fov = viewer.getHfov();
-
-      // Left eye (slight offset left)
-      stereoContext.save();
-      stereoContext.translate(-eyeSeparation, 0);
-      stereoContext.fillStyle = '#00FF00';
-      stereoContext.font = '14px Arial';
-      stereoContext.fillText('L', 20, 30);
-      stereoContext.restore();
-
-      // Right eye (slight offset right)
-      stereoContext.save();
-      stereoContext.translate(eyeSeparation, 0);
-      stereoContext.fillStyle = '#FF0000';
-      stereoContext.font = '14px Arial';
-      stereoContext.fillText('R', width - 40, 30);
-      stereoContext.restore();
-
-      // Draw center line divider
-      stereoContext.strokeStyle = 'rgba(255,255,255,0.3)';
-      stereoContext.lineWidth = 2;
-      stereoContext.beginPath();
-      stereoContext.moveTo(width / 2, 0);
-      stereoContext.lineTo(width / 2, height);
-      stereoContext.stroke();
-
-      // Continue rendering loop
-      requestAnimationFrame(renderStereoView);
-    }
-
-    function enableVRMode() {
-      if (vrMode) return; // Already in VR mode
+      // Portrait-held-upright orientation mapping for Cardboard
+      const yaw   =  e.alpha;          // compass heading  → yaw
+      const pitch = (e.beta  - 90);    // tilted up = looking up
 
       try {
-        // Hide the title bar
-        const titleBar = document.getElementById('titleBar');
-        if (titleBar) titleBar.style.display = 'none';
+        viewer.setYaw(yaw);
+        viewer.setPitch(Math.max(-85, Math.min(85, pitch)));
+      } catch(_){}
+    }
 
-        // Hide navigation buttons
-        const prevBtn = document.getElementById('prevBtn');
-        const nextBtn = document.getElementById('nextBtn');
-        if (prevBtn) prevBtn.style.display = 'none';
-        if (nextBtn) nextBtn.style.display = 'none';
+    async function enableVRMode() {
+      if (vrMode) return;
 
-        // Enter fullscreen
-        if (!viewer.isFullscreen()) {
-          viewer.toggleFullscreen();
+      // 1. Request gyro permission on iOS 13+
+      if (typeof DeviceOrientationEvent !== 'undefined' &&
+          typeof DeviceOrientationEvent.requestPermission === 'function') {
+        try {
+          const perm = await DeviceOrientationEvent.requestPermission();
+          if (perm !== 'granted') {
+            alert('Motion sensor permission is required for VR mode.');
+            return;
+          }
+        } catch (err) {
+          console.warn('Orientation permission error:', err);
         }
-
-        // Create stereo canvas overlay
-        stereoCanvas = createStereoCanvas();
-        stereoContext = stereoCanvas.getContext('2d');
-
-        // Request device orientation permission (iOS 13+)
-        if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-          DeviceOrientationEvent.requestPermission()
-            .then(response => {
-              if (response === 'granted') {
-                console.log('✅ Motion Sensor permission granted');
-                window.addEventListener('deviceorientation', handleDeviceOrientation);
-              }
-            })
-            .catch(err => {
-              console.warn('Motion Sensor permission denied:', err);
-              // Continue anyway on Android
-              window.addEventListener('deviceorientation', handleDeviceOrientation);
-            });
-        } else {
-          // Android doesn't require explicit permission
-          window.addEventListener('deviceorientation', handleDeviceOrientation);
-        }
-
-        // Start rendering stereo view
-        renderStereoView();
-
-        vrMode = true;
-        console.log('✅ VR Mode Enabled');
-
-      } catch (err) {
-        console.error('VR Mode Error:', err);
-        alert('VR mode is not supported on this device');
-        removeStereoCanvas();
-        vrMode = false;
       }
+
+      vrMode = true;
+
+      // 2. Hide UI chrome
+      ['titleBar','prevBtn','nextBtn','vrBtn'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+      });
+
+      // 3. Go fullscreen + lock landscape
+      try {
+        const el = document.documentElement;
+        if (el.requestFullscreen)            await el.requestFullscreen();
+        else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+      } catch(_){}
+      try { await screen.orientation.lock('landscape'); } catch(_){}
+
+      // 4. Create overlay canvas
+      vrCanvas = createVrOverlay();
+      vrCtx    = vrCanvas.getContext('2d');
+
+      // 5. Turn on gyro
+      window.addEventListener('deviceorientation', handleDeviceOrientation, true);
+
+      // 6. Start render loop
+      vrRenderLoop();
+
+      // 7. Tap anywhere on overlay → exit VR
+      vrCanvas.addEventListener('click', disableVRMode, { once: true });
+
+      console.log('✅ VR Mode enabled');
     }
 
     function disableVRMode() {
       if (!vrMode) return;
+      vrMode = false;
 
+      // Stop render loop
+      if (vrRAF) { cancelAnimationFrame(vrRAF); vrRAF = null; }
+
+      // Remove overlay
+      if (vrCanvas && vrCanvas.parentNode) vrCanvas.parentNode.removeChild(vrCanvas);
+      vrCanvas = null; vrCtx = null;
+
+      // Remove gyro
+      window.removeEventListener('deviceorientation', handleDeviceOrientation, true);
+
+      // Restore UI
+      ['titleBar','prevBtn','nextBtn','vrBtn'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = '';
+      });
+
+      // Exit fullscreen
       try {
-        // Show UI elements again
-        const titleBar = document.getElementById('titleBar');
-        if (titleBar) titleBar.style.display = 'block';
+        if (document.exitFullscreen)            document.exitFullscreen();
+        else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+      } catch(_){}
+      try { screen.orientation.unlock(); } catch(_){}
 
-        const prevBtn = document.getElementById('prevBtn');
-        const nextBtn = document.getElementById('nextBtn');
-        if (prevBtn) prevBtn.style.display = 'block';
-        if (nextBtn) nextBtn.style.display = 'block';
-
-        // Exit fullscreen
-        if (viewer.isFullscreen()) {
-          viewer.exitFullscreen();
-        }
-
-        // Remove stereo overlay
-        removeStereoCanvas();
-
-        // Remove device orientation listener
-        window.removeEventListener('deviceorientation', handleDeviceOrientation);
-
-        vrMode = false;
-        console.log('✅ VR Mode Disabled');
-
-      } catch (err) {
-        console.error('Error disabling VR mode:', err);
-      }
+      console.log('✅ VR Mode disabled');
     }
 
-    function handleDeviceOrientation(event) {
-      if (!vrMode) return;
-
-      const alpha = event.alpha; // Z axis rotation (0-360)
-      const beta = event.beta;   // X axis rotation (-180 to 180)
-      const gamma = event.gamma; // Y axis rotation (-90 to 90)
-
-      // Convert device orientation to viewer yaw/pitch
-      // This is a basic implementation - adjust based on your needs
-      const yaw = alpha;
-      const pitch = beta - 90; // Adjust offset as needed
-
-      // Update viewer orientation
-      viewer.setYaw(yaw);
-      viewer.setPitch(pitch);
-    }
-
-    // ===== VR Button Handler =====
+    // ── VR Button ──
     const vrBtn = document.getElementById('vrBtn');
     if (vrBtn) {
-      vrBtn.onclick = () => {
-        if (!vrMode) {
-          // Entering VR mode
-          if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-            // iOS 13+ requires permission request
-            DeviceOrientationEvent.requestPermission()
-              .then(response => {
-                if (response === 'granted') {
-                  enableVRMode();
-                } else {
-                  alert('Motion Sensor permission required for VR mode');
-                }
-              })
-              .catch(err => {
-                console.warn('Permission request error:', err);
-                // Try to enable anyway
-                enableVRMode();
-              });
-          } else {
-            // Android and other devices
-            enableVRMode();
-          }
-        } else {
-          // Exiting VR mode
-          disableVRMode();
-        }
-      };
+      vrBtn.onclick = () => vrMode ? disableVRMode() : enableVRMode();
     }
 
-    // Handle window resize in VR mode
+    // ── Keep overlay canvas sized to screen ──
     window.addEventListener('resize', () => {
-      if (stereoCanvas) {
-        stereoCanvas.width = window.innerWidth;
-        stereoCanvas.height = window.innerHeight;
+      if (vrCanvas) {
+        vrCanvas.width  = window.innerWidth;
+        vrCanvas.height = window.innerHeight;
       }
     });
 
